@@ -13,11 +13,17 @@
 #include "nvs_flash.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
+#include "mqtt_client.h"
 
 // Wifi set up 
 #define WIFI_SSID      "Julians_iPhone"
 #define WIFI_PASSWORD  "16781678"
 #define MAXIMUM_RETRY  5
+
+// MQTT Configuration
+#define MQTT_BROKER_URI "mqtt://mqtt.eclipseprojects.io"
+#define MQTT_USERNAME   ""
+#define MQTT_PASSWORD   ""
 
 // FreeRTOS event group handle to signal when we are connected to WiFi or connection failed
 static EventGroupHandle_t s_wifi_event_group;
@@ -26,7 +32,10 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
- // Retry counter
+// MQTT client handle
+static esp_mqtt_client_handle_t mqtt_client = NULL;
+
+// WiFi connection retry counter
 static int s_retry_num = 0;
 
 // Function prototypes
@@ -41,11 +50,15 @@ void announceWinner(char player);
 void playRound();
 void playGame();
 void wifi_init_sta(void);
+void mqtt_init(void);
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 
 // Sets up game
 char board[3][3];
 bool gameOver = false;
 int xWins = 0, oWins = 0, drawCount = 0, gameCount = 0;
+
+// ===== WiFi and MQTT Setup =====
 
 // WiFi event handler- reacts to WiFi events
 static void event_handler(void* arg, esp_event_base_t event_base,
@@ -72,9 +85,46 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
+// MQTT event handler
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+    esp_mqtt_event_handle_t event = event_data;
+    
+    // Check if connected to MQTT broker
+    switch ((esp_mqtt_event_id_t)event_id) {
+        case MQTT_EVENT_CONNECTED:
+            printf("MQTT Connected to broker\n");
+            break;
+        case MQTT_EVENT_DISCONNECTED:
+            printf("MQTT Disconnected from broker\n");
+            break;
+        default:
+            break;
+    }
+}
+
+// Initialize MQTT client
+void mqtt_init(void)
+{
+    const esp_mqtt_client_config_t mqtt_cfg = {
+        .broker.address.uri = MQTT_BROKER_URI,
+        .credentials.username = MQTT_USERNAME,
+        .credentials.authentication.password = MQTT_PASSWORD
+    };
+
+    // Initialize MQTT client with configuration
+    mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+    
+    // Register event handlers
+    esp_mqtt_client_register_event(mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    
+    // Start MQTT client
+    esp_mqtt_client_start(mqtt_client);
+}
+
 // Initializes WiFi in station mode and connects
 void wifi_init_sta(void)
-{ss
+{
     // Event group to signal connection status
     s_wifi_event_group = xEventGroupCreate();
 
@@ -136,6 +186,8 @@ void wifi_init_sta(void)
         printf("\nWiFi connection failed.\n");
     }
 }
+
+// ===== Tic-Tac-Toe Game Logic =====
 
 // Resets game board
 void resetBoard() {
@@ -268,16 +320,28 @@ void playGame() {
 }
 
 void app_main() {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
     // Initialize NVS
     nvs_flash_init();
 
     // Initialize and connect to WiFi
-    printf("Connecting to WiFi...\n");
     wifi_init_sta();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    // Initialize MQTT after WiFi connection is established
+    mqtt_init();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+
     
     // Show menu
     printf("Starting Tic-Tac-Toe Simulation...\n\n");
     vTaskDelay(pdMS_TO_TICKS(1000));
     srand((unsigned int) time(NULL));
     playGame();
+    
+    // Clean up MQTT client when done
+    esp_mqtt_client_stop(mqtt_client);
+    esp_mqtt_client_destroy(mqtt_client);
 }
