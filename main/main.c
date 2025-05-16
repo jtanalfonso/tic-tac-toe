@@ -21,9 +21,10 @@
 #define MAXIMUM_RETRY  5
 
 // MQTT Configuration
-#define MQTT_BROKER_URI "mqtt://mqtt.eclipseprojects.io"
+#define MQTT_BROKER_URI "mqtt://35.235.98.7"
 #define MQTT_USERNAME   ""
 #define MQTT_PASSWORD   ""
+#define MQTT_OUTPUT_TOPIC "ttt/game_output"
 
 // FreeRTOS event group handle to signal when we are connected to WiFi or connection failed
 static EventGroupHandle_t s_wifi_event_group;
@@ -60,6 +61,13 @@ int xWins = 0, oWins = 0, drawCount = 0, gameCount = 0;
 
 // ===== WiFi and MQTT Setup =====
 
+// Publish message to MQTT broker
+void mqtt_publish_message(const char *topic, const char *message) {
+    if (mqtt_client != NULL) {
+        int msg_id = esp_mqtt_client_publish(mqtt_client, topic, message, 0, 1, 0);
+    }
+}
+
 // WiFi event handler- reacts to WiFi events
 static void event_handler(void* arg, esp_event_base_t event_base,
                           int32_t event_id, void* event_data)
@@ -72,12 +80,12 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         if (s_retry_num < MAXIMUM_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
-            printf("Retrying connection...\n");
+            mqtt_publish_message("ttt/game_output", "Retrying connection...\n");
         } else {
             // Max retires reached, set fail bit
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
-        printf("Connection failed.\n");
+        mqtt_publish_message("ttt/game_output", "Connection failed.\n");
     // When IP address is obtained, reset retry counter and set connected bit
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_retry_num = 0;
@@ -93,10 +101,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     // Check if connected to MQTT broker
     switch ((esp_mqtt_event_id_t)event_id) {
         case MQTT_EVENT_CONNECTED:
-            printf("MQTT Connected to broker\n");
+            mqtt_publish_message("ttt/game_output", "MQTT Connected to broker\n");
             break;
         case MQTT_EVENT_DISCONNECTED:
-            printf("MQTT Disconnected from broker\n");
+            mqtt_publish_message("ttt/game_output", "MQTT disconnected from broker\n");
             break;
         default:
             break;
@@ -178,13 +186,6 @@ void wifi_init_sta(void)
             pdFALSE,
             pdFALSE,
             portMAX_DELAY);
-
-    // Check if connected or failed
-    if (bits & WIFI_CONNECTED_BIT) {
-        printf("\nWiFi connected.\n");
-    } else if (bits & WIFI_FAIL_BIT) {
-        printf("\nWiFi connection failed.\n");
-    }
 }
 
 // ===== Tic-Tac-Toe Game Logic =====
@@ -200,26 +201,43 @@ void resetBoard() {
 
 // Prints game board
 void printBoard() {
-    printf("\n");
+    char line[50];
+
+    mqtt_publish_message("ttt/game_output", "\n");
+
     for (int i = 0; i < 3; i++) {
+        int len = 0;
         for (int j = 0; j < 3; j++) {
-            printf(" %c ", board[i][j]);
-            if (j < 2) printf("|");
+            len += snprintf(line + len, sizeof(line) - len, " %c ", board[i][j]);
+            if (j < 2) {
+                len += snprintf(line + len, sizeof(line) - len, "|");
+            }
         }
-        printf("\n");
-        if (i < 2) printf("-----------\n");
+        mqtt_publish_message("ttt/game_output", line);
+
+        if (i < 2) {
+            mqtt_publish_message("ttt/game_output", "-----------");
+        }
     }
-    printf("\n");
+
+    mqtt_publish_message("ttt/game_output", "\n");
 }
 
 void printGameCount() {
-    printf("\nGame #%d\n", gameCount);
+    char msg[50];
+    snprintf(msg, sizeof(msg), "Game #%d", gameCount);
+    mqtt_publish_message("ttt/game_output", msg);
 }
 
 // Prints outcome of the game
 void printOutcome(const char *outcome) {
-    printf("%s wins!\n", outcome);
-    printf("X Wins: %d | O Wins: %d | Draws: %d\n", xWins, oWins, drawCount);
+    char msg[100];
+
+    snprintf(msg, sizeof(msg), "%s wins!", outcome);
+    mqtt_publish_message("ttt/game_output", msg);
+
+    snprintf(msg, sizeof(msg), "X Wins: %d | O Wins: %d | Draws: %d", xWins, oWins, drawCount);
+    mqtt_publish_message("ttt/game_output", msg);
 }
 
 // Player X makes a move
@@ -315,8 +333,13 @@ void playGame() {
         gameCount++;
         playRound();
     }
-    printf("\nAll 100 games completed.\n");
-    printf("Final Score: X Wins: %d | O Wins: %d | Draws: %d\n", xWins, oWins, drawCount);
+
+    char msg[100];
+    snprintf(msg, sizeof(msg), "\nAll 100 games completed.\n");
+    mqtt_publish_message("ttt/game_output", msg);
+
+    snprintf(msg, sizeof(msg), "Final Score: X Wins: %d | O Wins: %d | Draws: %d\n", xWins, oWins, drawCount);
+    mqtt_publish_message("ttt/game_output", msg);
 }
 
 void app_main() {
@@ -331,12 +354,13 @@ void app_main() {
     
     // Initialize MQTT after WiFi connection is established
     mqtt_init();
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    mqtt_publish_message("ttt/game_output", "Wifi connected.\n");
     
 
     
     // Show menu
-    printf("Starting Tic-Tac-Toe Simulation...\n\n");
+    mqtt_publish_message("ttt/game_output", "Starting Tic-Tac-Toe Simulation...\n\n");
     vTaskDelay(pdMS_TO_TICKS(1000));
     srand((unsigned int) time(NULL));
     playGame();
