@@ -2,8 +2,32 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <time.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+#include "lwip/err.h"
+#include "lwip/sys.h"
+
+// Wifi set up 
+#define WIFI_SSID      "Julians_iPhone"
+#define WIFI_PASSWORD  "16781678"
+#define MAXIMUM_RETRY  5
+
+// FreeRTOS event group handle to signal when we are connected to WiFi or connection failed
+static EventGroupHandle_t s_wifi_event_group;
+
+// Define bits to signal connection status via event group
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT      BIT1
+
+ // Retry counter
+static int s_retry_num = 0;
 
 // Function prototypes
 void resetBoard();
@@ -16,11 +40,102 @@ void checkWinner();
 void announceWinner(char player);
 void playRound();
 void playGame();
+void wifi_init_sta(void);
 
 // Sets up game
 char board[3][3];
 bool gameOver = false;
 int xWins = 0, oWins = 0, drawCount = 0, gameCount = 0;
+
+// WiFi event handler- reacts to WiFi events
+static void event_handler(void* arg, esp_event_base_t event_base,
+                          int32_t event_id, void* event_data)
+{   
+    // Attempt to connect to WiFi
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    // If disconnected, retry up to MAXIMUM_RETRY times
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (s_retry_num < MAXIMUM_RETRY) {
+            esp_wifi_connect();
+            s_retry_num++;
+            printf("Retrying connection...\n");
+        } else {
+            // Max retires reached, set fail bit
+            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        }
+        printf("Connection failed.\n");
+    // When IP address is obtained, reset retry counter and set connected bit
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        s_retry_num = 0;
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+// Initializes WiFi in station mode and connects
+void wifi_init_sta(void)
+{ss
+    // Event group to signal connection status
+    s_wifi_event_group = xEventGroupCreate();
+
+    // Initialize TCP/IP network interface
+    ESP_ERROR_CHECK(esp_netif_init());
+
+    // Initialize event loop
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // Create default WiFi station interface
+    esp_netif_create_default_wifi_sta();
+
+    // Initialize WiFi with default config
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    // Register event handlers for WiFi events
+    esp_event_handler_instance_t instance_any_id;
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                        ESP_EVENT_ANY_ID,
+                                                        &event_handler,
+                                                        NULL,
+                                                        &instance_any_id));
+    // Register event handler for IP events
+    esp_event_handler_instance_t instance_got_ip;
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                        IP_EVENT_STA_GOT_IP,
+                                                        &event_handler,
+                                                        NULL,
+                                                        &instance_got_ip));
+
+    // Set WiFi configuration
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASSWORD,
+	        .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+        },
+    };
+
+    // Set WiFi to station mode
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
+    // Set WiFi configuration
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
+    // Start WiFi
+    ESP_ERROR_CHECK(esp_wifi_start() );
+
+    // Wait for successful connection
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+            pdFALSE,
+            pdFALSE,
+            portMAX_DELAY);
+
+    // Check if connected or failed
+    if (bits & WIFI_CONNECTED_BIT) {
+        printf("\nWiFi connected.\n");
+    } else if (bits & WIFI_FAIL_BIT) {
+        printf("\nWiFi connection failed.\n");
+    }
+}
 
 // Resets game board
 void resetBoard() {
@@ -153,8 +268,14 @@ void playGame() {
 }
 
 void app_main() {
+    // Initialize NVS
+    nvs_flash_init();
+
+    // Initialize and connect to WiFi
+    printf("Connecting to WiFi...\n");
+    wifi_init_sta();
+    
     // Show menu
-    // int gameMode;
     printf("Starting Tic-Tac-Toe Simulation...\n\n");
     vTaskDelay(pdMS_TO_TICKS(1000));
     srand((unsigned int) time(NULL));
