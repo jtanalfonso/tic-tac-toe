@@ -57,6 +57,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 // Sets up game
 char board[3][3];
 bool gameOver = false;
+static int gameMode = 0;
+static bool gameModeReceived = false;
 int xWins = 0, oWins = 0, drawCount = 0, gameCount = 0;
 
 // ===== WiFi and MQTT Setup =====
@@ -102,10 +104,30 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch ((esp_mqtt_event_id_t)event_id) {
         case MQTT_EVENT_CONNECTED:
             mqtt_publish_message("ttt/game_output", "MQTT Connected to broker\n");
+            esp_mqtt_client_subscribe(mqtt_client, "ttt/menu/receive", 0);
             break;
         case MQTT_EVENT_DISCONNECTED:
             mqtt_publish_message("ttt/game_output", "MQTT disconnected from broker\n");
             break;
+        case MQTT_EVENT_DATA:
+        {
+            esp_mqtt_event_handle_t event = event_data;
+
+            if (strncmp(event->topic, "ttt/menu/receive", event->topic_len) == 0) {
+                char payload[10] = {0};
+                int len = event->data_len < sizeof(payload) - 1 ? event->data_len : sizeof(payload) - 1;
+                strncpy(payload, event->data, len);
+                payload[len] = '\0';
+
+                int choice = atoi(payload);
+                if (choice == 1 || choice == 2) {
+                    gameMode = choice;
+                    gameModeReceived = true;
+                }
+            }
+            break;
+        }
+
         default:
             break;
     }
@@ -342,6 +364,18 @@ void playGame() {
     mqtt_publish_message("ttt/game_output", msg);
 }
 
+int displayMenu() {
+    gameModeReceived = false;
+
+     mqtt_publish_message("ttt/menu/request", "SELECT MENU");
+
+     while (!gameModeReceived) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    return gameMode;
+}
+
 void app_main() {
     vTaskDelay(pdMS_TO_TICKS(1000));
 
@@ -350,16 +384,13 @@ void app_main() {
 
     // Initialize and connect to WiFi
     wifi_init_sta();
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(2000));
     
-    // Initialize MQTT after WiFi connection is established
+    // Initialize MQTT
     mqtt_init();
     vTaskDelay(pdMS_TO_TICKS(2000));
-    mqtt_publish_message("ttt/game_output", "Wifi connected.\n");
     
-
-    
-    // Show menu
+    gameMode = displayMenu();
     mqtt_publish_message("ttt/game_output", "Starting Tic-Tac-Toe Simulation...\n\n");
     vTaskDelay(pdMS_TO_TICKS(1000));
     srand((unsigned int) time(NULL));
